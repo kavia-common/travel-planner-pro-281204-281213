@@ -30,14 +30,35 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .db import get_db_session
-from .models import Activity, Accommodation, Base, ItineraryDay, Note, Trip, TripDestination, User
+from .db import ENGINE, get_db_session
+from sqlalchemy import func as sa_func
+
+from .models import (
+    Activity,
+    Accommodation,
+    Base,
+    BudgetCategory,
+    BudgetExpense,
+    ItineraryDay,
+    Note,
+    Trip,
+    TripDestination,
+    User,
+)
 from .schemas import (
     AccommodationCreate,
     AccommodationOut,
     ActivityCreate,
     ActivityOut,
     ApiMessage,
+    BudgetCategoryCreate,
+    BudgetCategoryOut,
+    BudgetCategoryUpdate,
+    BudgetExpenseCreate,
+    BudgetExpenseOut,
+    BudgetSummaryOut,
+    BudgetTotals,
+    BudgetCategorySummary,
     DayCreate,
     DayOut,
     DestinationCreate,
@@ -60,6 +81,7 @@ openapi_tags = [
     {"name": "Accommodations", "description": "Lodging tracking"},
     {"name": "Activities", "description": "Activities tracking"},
     {"name": "Notes", "description": "Travel notes"},
+    {"name": "Budget", "description": "Budget tracker (planned categories + actual expenses)"},
 ]
 
 
@@ -71,9 +93,13 @@ def _get_allowed_origins() -> List[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+# Simple template behavior: create tables on startup.
+# In a production app, you'd use migrations (Alembic), but this keeps the template self-contained.
+Base.metadata.create_all(bind=ENGINE)
+
 app = FastAPI(
     title="Travel Planner API",
-    description="API for a travel planner app (trips, destinations, itinerary, accommodations, activities, notes).",
+    description="API for a travel planner app (trips, destinations, itinerary, accommodations, activities, notes, budget).",
     version="0.1.0",
     openapi_tags=openapi_tags,
 )
@@ -478,3 +504,254 @@ def list_notes(trip_id: UUID, db: Session = Depends(get_db_session)) -> list[Not
         raise HTTPException(status_code=404, detail="Trip not found")
     stmt = select(Note).where(Note.trip_id == trip_id).order_by(Note.updated_at.desc(), Note.created_at.desc())
     return list(db.scalars(stmt).all())
+
+
+# -----------------------
+# Budget tracker
+# -----------------------
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/trips/{trip_id}/budget/categories",
+    tags=["Budget"],
+    summary="Create budget category",
+    response_model=BudgetCategoryOut,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="create_budget_category",
+)
+def create_budget_category(trip_id: UUID, payload: BudgetCategoryCreate, db: Session = Depends(get_db_session)) -> BudgetCategoryOut:
+    """Create a planned budget category for a trip."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    cat = BudgetCategory(trip_id=trip_id, **payload.model_dump())
+    db.add(cat)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Category name already exists for this trip")
+    db.refresh(cat)
+    return cat
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/trips/{trip_id}/budget/categories",
+    tags=["Budget"],
+    summary="List budget categories",
+    response_model=list[BudgetCategoryOut],
+    operation_id="list_budget_categories",
+)
+def list_budget_categories(trip_id: UUID, db: Session = Depends(get_db_session)) -> list[BudgetCategoryOut]:
+    """List planned budget categories for a trip."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    stmt = select(BudgetCategory).where(BudgetCategory.trip_id == trip_id).order_by(BudgetCategory.created_at.asc())
+    return list(db.scalars(stmt).all())
+
+
+# PUBLIC_INTERFACE
+@app.patch(
+    "/trips/{trip_id}/budget/categories/{category_id}",
+    tags=["Budget"],
+    summary="Update budget category",
+    response_model=BudgetCategoryOut,
+    operation_id="update_budget_category",
+)
+def update_budget_category(
+    trip_id: UUID, category_id: UUID, payload: BudgetCategoryUpdate, db: Session = Depends(get_db_session)
+) -> BudgetCategoryOut:
+    """Update a budget category for a trip."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    cat = db.get(BudgetCategory, category_id)
+    if not cat or cat.trip_id != trip_id:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(cat, k, v)
+
+    db.add(cat)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Category name already exists for this trip")
+    db.refresh(cat)
+    return cat
+
+
+# PUBLIC_INTERFACE
+@app.delete(
+    "/trips/{trip_id}/budget/categories/{category_id}",
+    tags=["Budget"],
+    summary="Delete budget category",
+    response_model=ApiMessage,
+    operation_id="delete_budget_category",
+)
+def delete_budget_category(trip_id: UUID, category_id: UUID, db: Session = Depends(get_db_session)) -> ApiMessage:
+    """Delete a budget category. Expenses will remain and become uncategorized."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    cat = db.get(BudgetCategory, category_id)
+    if not cat or cat.trip_id != trip_id:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    db.delete(cat)
+    db.commit()
+    return ApiMessage(message="Category deleted")
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/trips/{trip_id}/budget/expenses",
+    tags=["Budget"],
+    summary="Create budget expense",
+    response_model=BudgetExpenseOut,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="create_budget_expense",
+)
+def create_budget_expense(trip_id: UUID, payload: BudgetExpenseCreate, db: Session = Depends(get_db_session)) -> BudgetExpenseOut:
+    """Create an actual expense entry for a trip (optionally categorized)."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    if payload.category_id:
+        cat = db.get(BudgetCategory, payload.category_id)
+        if not cat or cat.trip_id != trip_id:
+            raise HTTPException(status_code=404, detail="Category not found")
+
+    exp = BudgetExpense(trip_id=trip_id, **payload.model_dump())
+    db.add(exp)
+    db.commit()
+    db.refresh(exp)
+
+    # add denormalized category_name for frontend convenience
+    cat_name = None
+    if exp.category_id:
+        cat = db.get(BudgetCategory, exp.category_id)
+        cat_name = cat.name if cat else None
+
+    out = BudgetExpenseOut.model_validate(exp, from_attributes=True).model_dump()
+    out["category_name"] = cat_name
+    return BudgetExpenseOut(**out)
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/trips/{trip_id}/budget/expenses",
+    tags=["Budget"],
+    summary="List budget expenses",
+    response_model=list[BudgetExpenseOut],
+    operation_id="list_budget_expenses",
+)
+def list_budget_expenses(trip_id: UUID, db: Session = Depends(get_db_session)) -> list[BudgetExpenseOut]:
+    """List actual expenses for a trip (includes category_name for display)."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    stmt = select(BudgetExpense).where(BudgetExpense.trip_id == trip_id).order_by(BudgetExpense.created_at.desc())
+    expenses = list(db.scalars(stmt).all())
+
+    # batch load categories for names
+    cat_ids = {e.category_id for e in expenses if e.category_id}
+    names = {}
+    if cat_ids:
+        cats = list(db.scalars(select(BudgetCategory).where(BudgetCategory.id.in_(cat_ids))).all())
+        names = {c.id: c.name for c in cats}
+
+    out: list[BudgetExpenseOut] = []
+    for e in expenses:
+        data = BudgetExpenseOut.model_validate(e, from_attributes=True).model_dump()
+        data["category_name"] = names.get(e.category_id) if e.category_id else None
+        out.append(BudgetExpenseOut(**data))
+    return out
+
+
+# PUBLIC_INTERFACE
+@app.delete(
+    "/trips/{trip_id}/budget/expenses/{expense_id}",
+    tags=["Budget"],
+    summary="Delete budget expense",
+    response_model=ApiMessage,
+    operation_id="delete_budget_expense",
+)
+def delete_budget_expense(trip_id: UUID, expense_id: UUID, db: Session = Depends(get_db_session)) -> ApiMessage:
+    """Delete an expense entry."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    exp = db.get(BudgetExpense, expense_id)
+    if not exp or exp.trip_id != trip_id:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    db.delete(exp)
+    db.commit()
+    return ApiMessage(message="Expense deleted")
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/trips/{trip_id}/budget/summary",
+    tags=["Budget"],
+    summary="Get budget summary",
+    response_model=BudgetSummaryOut,
+    operation_id="get_budget_summary",
+)
+def get_budget_summary(trip_id: UUID, db: Session = Depends(get_db_session)) -> BudgetSummaryOut:
+    """Return planned vs actual totals and a per-category breakdown."""
+    trip = db.get(Trip, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    # planned totals
+    planned_total = db.scalar(select(sa_func.coalesce(sa_func.sum(BudgetCategory.planned_amount), 0)).where(BudgetCategory.trip_id == trip_id))
+    actual_total = db.scalar(select(sa_func.coalesce(sa_func.sum(BudgetExpense.amount), 0)).where(BudgetExpense.trip_id == trip_id))
+
+    # per-category actuals (left join expenses)
+    stmt = (
+        select(
+            BudgetCategory.id,
+            BudgetCategory.name,
+            BudgetCategory.planned_amount,
+            sa_func.coalesce(sa_func.sum(BudgetExpense.amount), 0).label("actual_amount"),
+        )
+        .select_from(BudgetCategory)
+        .join(BudgetExpense, BudgetExpense.category_id == BudgetCategory.id, isouter=True)
+        .where(BudgetCategory.trip_id == trip_id)
+        .group_by(BudgetCategory.id, BudgetCategory.name, BudgetCategory.planned_amount)
+        .order_by(BudgetCategory.created_at.asc())
+    )
+    rows = db.execute(stmt).all()
+
+    by_category: list[BudgetCategorySummary] = []
+    for r in rows:
+        planned = float(r.planned_amount or 0)
+        actual = float(r.actual_amount or 0)
+        by_category.append(
+            BudgetCategorySummary(
+                id=r.id,
+                name=r.name,
+                planned_amount=planned,
+                actual_amount=actual,
+                remaining_amount=planned - actual,
+            )
+        )
+
+    totals = BudgetTotals(
+        planned_total=float(planned_total or 0),
+        actual_total=float(actual_total or 0),
+        remaining_total=float((planned_total or 0) - (actual_total or 0)),
+    )
+    return BudgetSummaryOut(trip_id=trip_id, totals=totals, by_category=by_category)

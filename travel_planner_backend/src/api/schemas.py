@@ -209,3 +209,90 @@ class NoteOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# -----------------------
+# Budget tracker
+# -----------------------
+
+
+class BudgetCategoryCreate(BaseModel):
+    """Create a budget category for a trip."""
+
+    name: str = Field(..., description="Category name", examples=["Food"])
+    planned_amount: float = Field(0, description="Planned budget for this category")
+    color: Optional[str] = Field(None, description="Optional color hint (hex or label)", examples=["#3b82f6"])
+
+
+class BudgetCategoryUpdate(BaseModel):
+    """Update a budget category."""
+
+    name: Optional[str] = Field(None, description="Category name")
+    planned_amount: Optional[float] = Field(None, description="Planned budget for this category")
+    color: Optional[str] = Field(None, description="Optional color hint")
+
+
+class BudgetCategoryOut(BaseModel):
+    """Budget category returned by API."""
+
+    id: UUID = Field(..., description="Category id (UUID)")
+    trip_id: UUID = Field(..., description="Trip id (UUID)")
+    name: str = Field(..., description="Category name")
+    planned_amount: float = Field(..., description="Planned amount")
+    color: Optional[str] = Field(None, description="Color hint")
+    created_at: datetime = Field(..., description="Created timestamp")
+    updated_at: datetime = Field(..., description="Updated timestamp")
+
+    class Config:
+        from_attributes = True
+
+
+class BudgetExpenseCreate(BaseModel):
+    """Create a budget expense row."""
+
+    category_id: Optional[UUID] = Field(None, description="Optional budget category id")
+    amount: float = Field(..., description="Expense amount (positive number)")
+    spent_on: Optional[date] = Field(None, description="Date expense was incurred")
+    description: Optional[str] = Field(None, description="Short description", examples=["Ramen dinner"])
+
+
+class BudgetExpenseOut(BaseModel):
+    """Budget expense returned by API."""
+
+    id: UUID = Field(..., description="Expense id (UUID)")
+    trip_id: UUID = Field(..., description="Trip id (UUID)")
+    category_id: Optional[UUID] = Field(None, description="Category id (UUID)")
+    category_name: Optional[str] = Field(None, description="Category name (denormalized for convenience)")
+    amount: float = Field(..., description="Amount")
+    spent_on: Optional[date] = Field(None, description="Spent on date")
+    description: Optional[str] = Field(None, description="Description")
+    created_at: datetime = Field(..., description="Created timestamp")
+
+    class Config:
+        from_attributes = True
+
+
+class BudgetCategorySummary(BaseModel):
+    """Summary numbers for a single category."""
+
+    id: UUID = Field(..., description="Category id (UUID)")
+    name: str = Field(..., description="Category name")
+    planned_amount: float = Field(..., description="Planned amount")
+    actual_amount: float = Field(..., description="Actual spend for this category")
+    remaining_amount: float = Field(..., description="Planned minus actual (negative means over budget)")
+
+
+class BudgetTotals(BaseModel):
+    """Overall totals for a trip budget."""
+
+    planned_total: float = Field(..., description="Sum of planned category amounts")
+    actual_total: float = Field(..., description="Sum of all expenses")
+    remaining_total: float = Field(..., description="Planned minus actual")
+
+
+class BudgetSummaryOut(BaseModel):
+    """Budget summary response."""
+
+    trip_id: UUID = Field(..., description="Trip id (UUID)")
+    totals: BudgetTotals = Field(..., description="Budget totals")
+    by_category: list[BudgetCategorySummary] = Field(..., description="Per-category breakdown")

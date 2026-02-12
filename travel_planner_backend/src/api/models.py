@@ -53,6 +53,9 @@ class Trip(Base):
     activities: Mapped[list["Activity"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
     notes: Mapped[list["Note"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
 
+    budget_categories: Mapped[list["BudgetCategory"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
+    budget_expenses: Mapped[list["BudgetExpense"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
+
 
 class TripDestination(Base):
     """Destination attached to a trip."""
@@ -173,3 +176,45 @@ class Note(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     trip: Mapped["Trip"] = relationship(back_populates="notes")
+
+
+class BudgetCategory(Base):
+    """Planned budget category (per trip)."""
+
+    __tablename__ = "budget_categories"
+    __table_args__ = (UniqueConstraint("trip_id", "name", name="uq_budget_categories_trip_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trips.id", ondelete="CASCADE"), nullable=False)
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    planned_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    color: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    trip: Mapped["Trip"] = relationship(back_populates="budget_categories")
+    expenses: Mapped[list["BudgetExpense"]] = relationship(
+        back_populates="category", cascade="save-update, merge", passive_deletes=True
+    )
+
+
+class BudgetExpense(Base):
+    """Actual expense row (per trip), optionally categorized."""
+
+    __tablename__ = "budget_expenses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trips.id", ondelete="CASCADE"), nullable=False)
+    category_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("budget_categories.id", ondelete="SET NULL"), nullable=True
+    )
+
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    spent_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    trip: Mapped["Trip"] = relationship(back_populates="budget_expenses")
+    category: Mapped[Optional["BudgetCategory"]] = relationship(back_populates="expenses")
