@@ -194,6 +194,7 @@ def create_trip(payload: TripCreate, db: Session = Depends(get_db_session)) -> T
         name=payload.name,
         start_date=payload.start_date,
         end_date=payload.end_date,
+        currency_code=payload.currency_code,
     )
     db.add(trip)
     db.commit()
@@ -253,6 +254,8 @@ def update_trip(trip_id: UUID, payload: TripUpdate, db: Session = Depends(get_db
         trip.start_date = payload.start_date
     if payload.end_date is not None:
         trip.end_date = payload.end_date
+    if payload.currency_code is not None:
+        trip.currency_code = payload.currency_code
 
     db.add(trip)
     db.commit()
@@ -630,7 +633,22 @@ def create_budget_expense(trip_id: UUID, payload: BudgetExpenseCreate, db: Sessi
         if not cat or cat.trip_id != trip_id:
             raise HTTPException(status_code=404, detail="Category not found")
 
-    exp = BudgetExpense(trip_id=trip_id, **payload.model_dump())
+    # Until we have FX conversion support, only allow expenses in the trip currency.
+    exp_currency = payload.currency_code or trip.currency_code
+    if exp_currency != trip.currency_code:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Expense currency ({exp_currency}) must match trip currency ({trip.currency_code}) until conversion is supported.",
+        )
+
+    exp = BudgetExpense(
+        trip_id=trip_id,
+        category_id=payload.category_id,
+        amount=payload.amount,
+        currency_code=payload.currency_code,  # can remain NULL; trip currency is implied
+        spent_on=payload.spent_on,
+        description=payload.description,
+    )
     db.add(exp)
     db.commit()
     db.refresh(exp)

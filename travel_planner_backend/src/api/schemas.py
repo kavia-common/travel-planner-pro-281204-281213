@@ -10,7 +10,7 @@ from datetime import date, datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ApiMessage(BaseModel):
@@ -38,6 +38,14 @@ class UserOut(BaseModel):
         from_attributes = True
 
 
+def _normalize_currency_code(code: str) -> str:
+    """Normalize a currency code to uppercase and validate basic ISO-4217 formatting."""
+    c = (code or "").strip().upper()
+    if len(c) != 3 or not c.isalpha():
+        raise ValueError("currency_code must be a 3-letter ISO-4217 code (e.g., USD, EUR)")
+    return c
+
+
 class TripCreate(BaseModel):
     """Create a trip."""
 
@@ -45,6 +53,12 @@ class TripCreate(BaseModel):
     name: str = Field(..., description="Trip name", examples=["Japan Spring 2026"])
     start_date: Optional[date] = Field(None, description="Trip start date")
     end_date: Optional[date] = Field(None, description="Trip end date")
+    currency_code: str = Field("USD", description="Trip base currency (ISO-4217)", examples=["USD", "EUR", "JPY"])
+
+    @field_validator("currency_code")
+    @classmethod
+    def validate_currency_code(cls, v: str) -> str:
+        return _normalize_currency_code(v)
 
 
 class TripUpdate(BaseModel):
@@ -53,6 +67,14 @@ class TripUpdate(BaseModel):
     name: Optional[str] = Field(None, description="Trip name")
     start_date: Optional[date] = Field(None, description="Trip start date")
     end_date: Optional[date] = Field(None, description="Trip end date")
+    currency_code: Optional[str] = Field(None, description="Trip base currency (ISO-4217)")
+
+    @field_validator("currency_code")
+    @classmethod
+    def validate_currency_code(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return _normalize_currency_code(v)
 
 
 class TripOut(BaseModel):
@@ -63,6 +85,7 @@ class TripOut(BaseModel):
     name: str = Field(..., description="Trip name")
     start_date: Optional[date] = Field(None, description="Trip start date")
     end_date: Optional[date] = Field(None, description="Trip end date")
+    currency_code: str = Field(..., description="Trip base currency (ISO-4217)")
     created_at: datetime = Field(..., description="Created timestamp")
     updated_at: datetime = Field(..., description="Updated timestamp")
 
@@ -252,8 +275,20 @@ class BudgetExpenseCreate(BaseModel):
 
     category_id: Optional[UUID] = Field(None, description="Optional budget category id")
     amount: float = Field(..., description="Expense amount (positive number)")
+    currency_code: Optional[str] = Field(
+        None,
+        description="Expense currency (ISO-4217). If omitted, the trip currency is implied.",
+        examples=["USD", "EUR", "JPY"],
+    )
     spent_on: Optional[date] = Field(None, description="Date expense was incurred")
     description: Optional[str] = Field(None, description="Short description", examples=["Ramen dinner"])
+
+    @field_validator("currency_code")
+    @classmethod
+    def validate_currency_code(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return _normalize_currency_code(v)
 
 
 class BudgetExpenseOut(BaseModel):
@@ -264,6 +299,7 @@ class BudgetExpenseOut(BaseModel):
     category_id: Optional[UUID] = Field(None, description="Category id (UUID)")
     category_name: Optional[str] = Field(None, description="Category name (denormalized for convenience)")
     amount: float = Field(..., description="Amount")
+    currency_code: Optional[str] = Field(None, description="Expense currency (ISO-4217); if null, trip currency is implied")
     spent_on: Optional[date] = Field(None, description="Spent on date")
     description: Optional[str] = Field(None, description="Description")
     created_at: datetime = Field(..., description="Created timestamp")

@@ -43,6 +43,9 @@ class Trip(Base):
     end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     home_timezone: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Trip-wide base currency (ISO-4217), used for all planned budgets and as the default for expenses.
+    currency_code: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -212,6 +215,10 @@ class BudgetExpense(Base):
     )
 
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+
+    # Optional expense currency (ISO-4217). If NULL, the trip currency is implied.
+    currency_code: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
+
     spent_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
